@@ -15,11 +15,14 @@ const eslintConfig = [
   // ✨ 新增一个配置对象，用于覆盖特定规则
   {
     rules: {
-      // 配置 'react/no-unescaped-entities' 规则
-      // "error": 表示如果违反规则，将作为错误报告
-      // "forbid": 默认情况下禁止的字符（通常是 ">" 和 "}"）
-      // "allow": 明确允许不转义的字符，这里我们添加了双引号 "\""
-      "react/no-unescaped-entities": ["error", { "forbid": [">", "}"], "allow": ["\""] }]
+      // 修改 react/no-unescaped-entities 规则
+      // 保持规则为 "error"，但通过 "skip" 选项允许双引号
+      "react/no-unescaped-entities": [
+        "error", // 保持为错误级别，以捕获其他未转义的实体
+        {
+          "skip": ["\""] // 在 skip 数组中添加双引号，表示忽略此字符的检查
+        }
+      ]
     }
   }
 ];
