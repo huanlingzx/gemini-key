@@ -70,7 +70,7 @@ export default function HomePage() {
             setDbKeys(keys);
         } catch (error) {
             console.error('加载数据库 Key 列表失败:', error);
-            setDbKeys([{ key: "加载失败", status: "error", errorMessage: `无法从数据库加载: ${error.message}` }]);
+            setDbKeys([{ id: 'load-error', keyString: "加载失败", status: "error", errorMessage: `无法从数据库加载: ${error.message}` }]);
         } finally {
             setInitialLoad(false);
         }
@@ -117,7 +117,7 @@ export default function HomePage() {
     // API Key 验证逻辑 (发送识别到的 Key 到后端)
     const validateGeminiApiKeys = async () => {
         if (identifiedKeys.length === 0) {
-            setDbKeys([{ key: "无密钥", status: "info", errorMessage: "请先识别密钥。" }]);
+            setDbKeys([{ id: 'no-key-to-validate', keyString: "无密钥", status: "info", errorMessage: "请先识别密钥。" }]);
             return;
         }
 
@@ -142,7 +142,7 @@ export default function HomePage() {
 
         } catch (error) {
             console.error('API Key 验证请求失败:', error);
-            setDbKeys([{ key: "请求失败", status: "error", errorMessage: `验证请求失败: ${error.message}` }]);
+            setDbKeys([{ id: 'request-failed', keyString: "请求失败", status: "error", errorMessage: `验证请求失败: ${error.message}` }]);
         } finally {
             setIsLoadingValidate(false);
         }
@@ -152,7 +152,7 @@ export default function HomePage() {
     const exportValidKeys = useCallback(() => {
         const validKeys = dbKeys // 从 dbKeys 中过滤
             .filter(item => item.status === 'valid')
-            .map(item => item.key);
+            .map(item => item.keyString);
 
         if (validKeys.length === 0) {
             alert('没有找到有效的 Key 可以导出。');
@@ -257,7 +257,7 @@ export default function HomePage() {
                             </span>
                             <div className="flex-1">
                                 <code className="bg-gray-100 text-gray-800 px-2 py-1 rounded text-sm font-mono break-all">
-                                    {item.key}
+                                    {item.keyString}
                                 </code>
                                 <p className={`text-sm mt-1 ${getStatusColorClass(item.status)}`}>
                                     状态: {getTranslatedStatus(item.status)}

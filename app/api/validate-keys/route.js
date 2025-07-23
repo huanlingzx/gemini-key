@@ -5,14 +5,21 @@ import { PrismaClient } from '@prisma/client'; // 导入 PrismaClient
 const prisma = new PrismaClient(); // 初始化 Prisma Client
 
 // const GEMINI_API_MODELS_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-const GEMINI_API_MODELS_URL = 'https://api-proxy.me/v1beta/models';
+const GEMINI_API_MODELS_URL = 'https://api-proxy.me/gemini/v1beta/models';
 
 export async function POST(request) {
     try {
         const { keys } = await request.json();
 
         if (!Array.isArray(keys) || keys.length === 0) {
-            return NextResponse.json({ error: '请提供 API Keys 数组。' }, { status: 400 });
+            // 如果前端发送空数组，则返回所有数据库中的 Key，不进行验证
+            const allKeysInDb = await prisma.apiKey.findMany({
+                orderBy: {
+                    createdAt: 'desc'
+                }
+            });
+            await prisma.$disconnect(); // 确保断开连接
+            return NextResponse.json(allKeysInDb);
         }
 
         const currentValidationResults = []; // 用于存储本次请求的验证结果
@@ -27,7 +34,7 @@ export async function POST(request) {
                     headers: {
                         'Content-Type': 'application/json',
                         'X-Goog-Api-Key': key,
-                        'X-Goog-Api-Client': 'nextjs-gemini-key-validator/1.0.0 (Custom Backend)',
+                        'X-Goog-Api-Client': 'nextjs-gemini-key-validator/1.0.0',
                     },
                 });
                 const data = await response.json();
@@ -51,7 +58,7 @@ export async function POST(request) {
             // ✨ 数据库操作：查找或创建/更新 API Key 记录
             try {
                 const existingKey = await prisma.apiKey.findUnique({
-                    where: { key: key },
+                    where: { keyString: key },
                 });
 
                 if (existingKey) {
@@ -68,7 +75,7 @@ export async function POST(request) {
                     // 如果 Key 不存在，则创建新记录
                     await prisma.apiKey.create({
                         data: {
-                            key: key,
+                            keyString: key,
                             status: status,
                             errorMessage: errorMessage,
                         },
