@@ -183,7 +183,7 @@ export default function HomePage() {
                 <p className="font-semibold mb-1">💡 使用说明：</p>
                 <p className="text-sm">
                     请在下方输入框中粘贴您的 Gemini API Key 文本。工具会智能识别，即使密钥被换行或分隔符打断也能识别。<br />
-                    识别出所有 Key 后，点击 <span className="font-bold">"🚀 批量验证 Keys"</span> 按钮，工具将通过后端服务器安全地验证每个 Key 是否可用。
+                    识别出所有 Key 后，点击 <span className="font-bold">&quot;🚀 批量验证 Keys&quot;</span> 按钮，工具将通过后端服务器安全地验证每个 Key 是否可用。
                     验证完成后，您可以导出所有<span className="font-bold text-green-700">有效的 Key</span>。
                 </p>
                 <pre className="mt-3 p-2 bg-yellow-100 rounded text-xs overflow-auto">
