@@ -7,26 +7,34 @@ const prisma = new PrismaClient(); // 初始化 Prisma Client
 // const GEMINI_API_MODELS_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 const GEMINI_API_MODELS_URL = 'https://api-proxy.me/gemini/v1beta/models';
 
+
 export async function POST(request) {
     try {
-        const { keys } = await request.json();
+        const { keys, action } = await request.json(); // ✨ 接收 action 字段
 
-        if (!Array.isArray(keys) || keys.length === 0) {
-            // 如果前端发送空数组，则返回所有数据库中的 Key，不进行验证
+        // 处理 "fetchAll" 动作：只返回所有数据库中的 Key
+        if (action === 'fetchAll') {
             const allKeysInDb = await prisma.apiKey.findMany({
                 orderBy: {
                     createdAt: 'desc'
                 }
             });
-            await prisma.$disconnect(); // 确保断开连接
+            await prisma.$disconnect();
             return NextResponse.json(allKeysInDb);
         }
 
-        const currentValidationResults = []; // 用于存储本次请求的验证结果
+        // 默认处理 "validateAndSave" 动作（或没有 action 字段时）
+        if (!Array.isArray(keys) || keys.length === 0) {
+            // 如果不是 fetchAll 且 keys 为空，则返回错误
+            await prisma.$disconnect();
+            return NextResponse.json({ error: '请提供 API Keys 数组进行验证。' }, { status: 400 });
+        }
+
+        const batchValidationResults = []; // 用于存储当前批次验证结果
 
         for (const key of keys) {
             let status = 'unknown';
-            let errorMessage = null; // 默认为 null
+            let errorMessage = null;
 
             try {
                 const response = await fetch(GEMINI_API_MODELS_URL, {
@@ -34,7 +42,7 @@ export async function POST(request) {
                     headers: {
                         'Content-Type': 'application/json',
                         'X-Goog-Api-Key': key,
-                        'X-Goog-Api-Client': 'nextjs-gemini-key-validator/1.0.0',
+                        'X-Goog-Api-Client': 'nextjs-gemini-key-validator/1.0.0 (Custom Backend)',
                     },
                 });
                 const data = await response.json();
@@ -55,24 +63,21 @@ export async function POST(request) {
                 errorMessage = `网络或服务器错误: ${error.message}`;
             }
 
-            // ✨ 数据库操作：查找或创建/更新 API Key 记录
+            // 数据库操作：查找或创建/更新 API Key 记录
             try {
                 const existingKey = await prisma.apiKey.findUnique({
                     where: { keyString: key },
                 });
 
                 if (existingKey) {
-                    // 如果 Key 已存在，则更新其状态和验证时间
                     await prisma.apiKey.update({
                         where: { id: existingKey.id },
                         data: {
                             status: status,
                             errorMessage: errorMessage,
-                            // lastValidatedAt 会由 @updatedAt 自动更新
                         },
                     });
                 } else {
-                    // 如果 Key 不存在，则创建新记录
                     await prisma.apiKey.create({
                         data: {
                             keyString: key,
@@ -81,30 +86,22 @@ export async function POST(request) {
                         },
                     });
                 }
-                // 将本次验证结果添加到返回列表
-                currentValidationResults.push({ key, status, errorMessage });
+                // 将当前 Key 的最新状态添加到批次结果中
+                batchValidationResults.push({ keyString: key, status, errorMessage });
 
             } catch (dbError) {
                 console.error(`数据库操作失败 for key ${key}:`, dbError);
-                currentValidationResults.push({ key, status: 'db_error', errorMessage: `数据库保存失败: ${dbError.message}` });
+                batchValidationResults.push({ keyString: key, status: 'db_error', errorMessage: `数据库保存失败: ${dbError.message}` });
             }
         }
 
-        // 返回所有当前数据库中的 API Key 及其最新状态
-        // 这样前端可以获取到完整的、最新的 Key 列表
-        const allKeysInDb = await prisma.apiKey.findMany({
-            orderBy: {
-                createdAt: 'desc' // 按创建时间排序
-            }
-        });
-
-        return NextResponse.json(allKeysInDb);
+        // 返回当前批次处理的 Keys 及其状态
+        return NextResponse.json(batchValidationResults);
 
     } catch (error) {
         console.error('API Key 验证后端错误:', error);
         return NextResponse.json({ error: '服务器内部错误。' }, { status: 500 });
     } finally {
-        // 确保在请求结束时断开数据库连接
         await prisma.$disconnect();
     }
 }
