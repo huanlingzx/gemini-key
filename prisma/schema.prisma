@@ -1,0 +1,26 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // ✨ 新增：指定 Prisma 应该操作的 Schema
+  // 'public' 是默认的，通常旧项目可能使用它。
+  // 'gemini_validator_schema' 是我们为新项目创建的 Schema。
+  schemas  = ["public", "gemini_validator_schema"]
+}
+
+model ApiKey {
+  id                String    @id @default(cuid())
+  keyString         String    @unique
+  status            String
+  lastValidatedAt   DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // ✨ 新增：将此模型映射到新的 Schema
+  @@schema("gemini_validator_schema")
+}
