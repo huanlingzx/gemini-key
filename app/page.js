@@ -1,10 +1,11 @@
 // app/page.js
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
+import { toast } from 'sonner'; // ✨ 导入 toast
 
-const BATCH_SIZE = 10; // 每批处理的 Key 数量
+const BATCH_SIZE = 50; // 每批处理的 Key 数量
 
 export default function HomePage() {
     const [apiKeyInput, setApiKeyInput] = useState('');
@@ -16,9 +17,16 @@ export default function HomePage() {
     const [initialLoad, setInitialLoad] = useState(true);
 
     // 进度条状态
-    const [progress, setProgress] = useState(0); // 0-100%
-    const [currentProcessed, setCurrentProcessed] = useState(0); // 当前已处理数量
-    const [totalKeysToProcess, setTotalKeysToProcess] = useState(0); // 总共需要处理的数量
+    const [progress, setProgress] = useState(0);
+    const [currentProcessed, setCurrentProcessed] = useState(0);
+    const [totalKeysToProcess, setTotalKeysToProcess] = useState(0);
+
+    // 验证结果统计
+    const [newValidKeysCount, setNewValidKeysCount] = useState(0);
+
+    // 随机选取 Key 的状态
+    const [randomSelectCount, setRandomSelectCount] = useState(1);
+    const [isCopying, setIsCopying] = useState(false);
 
     // ... (getTranslatedStatus 和 getStatusColorClass 保持不变)
     const getTranslatedStatus = useCallback((status) => {
@@ -29,6 +37,7 @@ export default function HomePage() {
             case 'info': return '信息';
             case 'db_error': return '数据库错误';
             case 'unknown': return '未知';
+            case 'deleted': return '已删除';
             default: return status;
         }
     }, []);
@@ -39,19 +48,22 @@ export default function HomePage() {
             case 'invalid': return 'text-red-600';
             case 'error': case 'db_error': return 'text-orange-600';
             case 'info': return 'text-blue-600';
+            case 'deleted': return 'text-gray-500';
             default: return 'text-gray-600';
         }
     }, []);
 
+    const totalValidKeysInDb = useMemo(() => {
+        return dbKeys.filter(item => item.status === 'valid').length;
+    }, [dbKeys]);
 
-    // 加载所有已保存的 Key
+
     const loadAllKeysFromDb = useCallback(async () => {
         try {
-            // 这里我们调用 validate-keys 路由，发送空数组，表示只获取所有 Key
             const response = await fetch('/api/validate-keys', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ keys: [], action: 'fetchAll' }), // ✨ 新增 action 字段
+                body: JSON.stringify({ keys: [], action: 'fetchAll' }),
             });
 
             if (!response.ok) {
@@ -63,6 +75,7 @@ export default function HomePage() {
             setDbKeys(keys);
         } catch (error) {
             console.error('加载数据库 Key 列表失败:', error);
+            toast.error(`加载数据库 Key 列表失败: ${error.message}`); // ✨ 使用 toast
             setDbKeys([{ id: 'load-error', keyString: "加载失败", status: "error", errorMessage: `无法从数据库加载: ${error.message}` }]);
         } finally {
             setInitialLoad(false);
@@ -73,18 +86,17 @@ export default function HomePage() {
         loadAllKeysFromDb();
     }, [loadAllKeysFromDb]);
 
-    // API Key 识别逻辑 (不变)
     const detectGeminiApiKeys = () => {
         setIsLoadingDetect(true);
         setIdentifiedKeys([]);
         setDetectMessage('');
-        // setValidationResults([]); // 清空之前的验证结果
         setProgress(0);
         setCurrentProcessed(0);
         setTotalKeysToProcess(0);
+        setNewValidKeysCount(0);
 
         const rawInput = apiKeyInput;
-        const apiKeyRegex = /AIzaSy[0-9a-zA-Z_-]{33}/;
+        const apiKeyRegex = /AIzaSy[0-9a-zA-Z_-]{30,}/;
 
         let uniqueKeys = new Set();
         const segments = rawInput
@@ -110,20 +122,22 @@ export default function HomePage() {
         setIsLoadingDetect(false);
     };
 
-    // API Key 验证逻辑 (分批发送)
     const validateGeminiApiKeys = async () => {
         if (identifiedKeys.length === 0) {
+            toast.info("请先识别密钥。"); // ✨ 使用 toast
             setDbKeys([{ id: 'no-key-to-validate', keyString: "无密钥", status: "info", errorMessage: "请先识别密钥。" }]);
             return;
         }
 
         setIsLoadingValidate(true);
-        setDbKeys([]); // 验证前清空当前的显示，待分批更新
+        setDbKeys([]);
         setCurrentProcessed(0);
-        setTotalKeysToProcess(identifiedKeys.length); // 设置总数
+        setTotalKeysToProcess(identifiedKeys.length);
+        setNewValidKeysCount(0);
 
         const totalKeys = identifiedKeys.length;
         let processedCount = 0;
+        let newlyValidatedCount = 0;
 
         for (let i = 0; i < totalKeys; i += BATCH_SIZE) {
             const batch = identifiedKeys.slice(i, i + BATCH_SIZE);
@@ -131,7 +145,7 @@ export default function HomePage() {
                 const response = await fetch('/api/validate-keys', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ keys: batch, action: 'validateAndSave' }), // ✨ 新增 action
+                    body: JSON.stringify({ keys: batch, action: 'validateAndSave' }),
                 });
 
                 if (!response.ok) {
@@ -139,13 +153,22 @@ export default function HomePage() {
                     throw new Error(errorData.error || `后端服务器错误: ${response.status} ${response.statusText}`);
                 }
 
-                const batchResults = await response.json(); // 后端返回的是处理过的这批 Key
-                // 合并新批次的结果到现有 dbKeys
+                const batchResults = await response.json();
+
                 setDbKeys(prevKeys => {
-                    // 过滤掉新批次中可能与旧批次重复的 Key，确保唯一性（基于 keyString）
                     const newKeysMap = new Map(batchResults.map(k => [k.keyString, k]));
                     const filteredPrevKeys = prevKeys.filter(pk => !newKeysMap.has(pk.keyString));
-                    return [...filteredPrevKeys, ...batchResults];
+                    const updatedKeys = [...filteredPrevKeys, ...batchResults];
+
+                    batchResults.forEach(item => {
+                        const oldKey = prevKeys.find(pk => pk.keyString === item.keyString);
+                        if (item.status === 'valid' && (!oldKey || oldKey.status !== 'valid')) {
+                            newlyValidatedCount++;
+                        }
+                    });
+                    setNewValidKeysCount(newlyValidatedCount);
+
+                    return updatedKeys;
                 });
 
                 processedCount += batch.length;
@@ -154,26 +177,23 @@ export default function HomePage() {
 
             } catch (error) {
                 console.error('API Key 验证请求失败:', error);
-                // 即使失败，也更新进度，并显示错误
+                toast.error(`API Key 验证请求失败: ${error.message}`); // ✨ 使用 toast
                 setDbKeys(prevKeys => [...prevKeys, { id: `batch-error-${i}`, keyString: `批次 ${i/BATCH_SIZE + 1} 验证失败`, status: "error", errorMessage: `验证请求失败: ${error.message}` }]);
-                // 可以选择中断或继续
-                break; // 遇到错误就停止
+                break;
             }
         }
         setIsLoadingValidate(false);
-        // 验证完成后再次加载所有 Key，确保显示最新、最完整的数据
         await loadAllKeysFromDb();
+        toast.success("所有 Key 验证完成！"); // ✨ 验证完成后提示
     };
 
-
-    // 导出正常 Key 的功能 (不变)
     const exportValidKeys = useCallback(() => {
         const validKeys = dbKeys
             .filter(item => item.status === 'valid')
             .map(item => item.keyString);
 
         if (validKeys.length === 0) {
-            alert('没有找到有效的 Key 可以导出。');
+            toast.info('没有找到有效的 Key 可以导出。'); // ✨ 使用 toast
             return;
         }
 
@@ -186,10 +206,75 @@ export default function HomePage() {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+        toast.success("有效 Key 已导出！"); // ✨ 导出成功提示
     }, [dbKeys]);
 
-    // 判断是否有有效的 Key 可以导出
-    const hasValidKeysToExport = dbKeys.some(item => item.status === 'valid');
+    const clearInvalidKeys = useCallback(async () => {
+        if (!confirm('确定要从数据库中删除所有无效的 Key 吗？此操作不可逆！')) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/validate-keys', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'clearInvalid' }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || `清除无效 Key 失败: ${response.status} ${response.statusText}`);
+            }
+
+            const result = await response.json();
+            toast.success(result.message); // ✨ 使用 toast
+            await loadAllKeysFromDb();
+        } catch (error) {
+            console.error('清除无效 Key 请求失败:', error);
+            toast.error(`清除无效 Key 失败: ${error.message}`); // ✨ 使用 toast
+        }
+    }, [loadAllKeysFromDb]);
+
+    const selectRandomKeys = useCallback(async () => {
+        if (randomSelectCount <= 0 || !Number.isInteger(Number(randomSelectCount))) {
+            toast.error('请输入一个有效的正整数作为选取数量。'); // ✨ 使用 toast
+            return;
+        }
+        if (totalValidKeysInDb === 0) {
+            toast.info('数据库中没有有效的 Key 可供选取。'); // ✨ 使用 toast
+            return;
+        }
+        if (randomSelectCount > totalValidKeysInDb) {
+            toast.info(`您请求选取 ${randomSelectCount} 个 Key，但数据库中只有 ${totalValidKeysInDb} 个有效 Key。`); // ✨ 使用 toast
+            return;
+        }
+
+        setIsCopying(true);
+        try {
+            const validKeys = dbKeys.filter(item => item.status === 'valid').map(item => item.keyString);
+
+            const numToSelect = Math.min(Number(randomSelectCount), validKeys.length);
+            const shuffledKeys = validKeys.sort(() => 0.5 - Math.random());
+            const selectedKeys = shuffledKeys.slice(0, numToSelect);
+
+            try {
+                await navigator.clipboard.writeText(selectedKeys.join('\n'));
+                toast.success(`已成功选取 ${selectedKeys.length} 个 Key 并复制到剪贴板！`); // ✨ 使用 toast
+            } catch (clipboardError) {
+                console.error('复制到剪贴板失败:', clipboardError);
+                // 移除备用方案，只提示用户
+                toast.error(`复制到剪贴板失败: ${clipboardError.message}`); // ✨ 使用 toast
+            }
+
+        } catch (error) {
+            console.error('随机选取 Key 失败:', error);
+            toast.error(`随机选取 Key 失败: ${error.message}`); // ✨ 使用 toast
+        } finally {
+            setIsCopying(false);
+        }
+    }, [randomSelectCount, totalValidKeysInDb, dbKeys]);
+
+    const hasValidKeysToExport = totalValidKeysInDb > 0;
 
     return (
         <div className="container mx-auto p-4 md:p-8 max-w-3xl bg-white shadow-lg rounded-xl my-8">
@@ -274,12 +359,22 @@ export default function HomePage() {
                     {initialLoad && <span className="ml-2 text-sm text-gray-600">加载中...</span>}
                     {!initialLoad && dbKeys.length > 0 && <span className="ml-2 text-sm text-gray-600">({dbKeys.length} 个)</span>}
                 </h3>
-                <ul className="list-none p-0 max-h-60 overflow-auto">
+                {/* 验证结果统计 */}
+                {newValidKeysCount > 0 && (
+                    <p className="text-md font-semibold text-green-700 mb-2">
+                        🎉 本次验证新增/更新有效 Key: {newValidKeysCount} 个
+                    </p>
+                )}
+                <p className="text-md font-semibold text-gray-700 mb-3">
+                    当前数据库中有效 Key 总数: {totalValidKeysInDb} 个
+                </p>
+
+                <ul className="list-none p-0 max-h-60 overflow-auto border rounded-md border-purple-100">
                     {!initialLoad && dbKeys.length === 0 && (
-                        <li className="text-gray-600 italic">数据库中暂无 Key。</li>
+                        <li className="p-2 text-gray-600 italic">数据库中暂无 Key。</li>
                     )}
                     {dbKeys.map((item) => (
-                        <li key={item.id} className="flex items-start py-2 border-b border-purple-100 last:border-b-0">
+                        <li key={item.id} className="flex items-start py-2 px-2 border-b border-purple-100 last:border-b-0">
                             <span className="mr-2 text-xl">
                                 {item.status === 'valid' && '✅'}
                                 {item.status === 'invalid' && '❌'}
@@ -287,6 +382,7 @@ export default function HomePage() {
                                 {item.status === 'info' && '💡'}
                                 {item.status === 'db_error' && '❗'}
                                 {item.status === 'unknown' && '❓'}
+                                {item.status === 'deleted' && '🗑️'}
                             </span>
                             <div className="flex-1">
                                 <code className="bg-gray-100 text-gray-800 px-2 py-1 rounded text-sm font-mono break-all">
@@ -305,15 +401,53 @@ export default function HomePage() {
                         </li>
                     ))}
                 </ul>
-                {/* 导出按钮 */}
-                {hasValidKeysToExport && (
+
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {/* 导出按钮 */}
+                    {hasValidKeysToExport && (
+                        <Button
+                            onClick={exportValidKeys}
+                            className="w-full py-3 text-lg bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors duration-200"
+                        >
+                            ⬇️ 导出有效的 Keys
+                        </Button>
+                    )}
+
+                    {/* 清除无效 Key 按钮 */}
                     <Button
-                        onClick={exportValidKeys}
-                        className="w-full mt-4 py-3 text-lg bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors duration-200"
+                        onClick={clearInvalidKeys}
+                        className="w-full py-3 text-lg bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors duration-200"
                     >
-                        ⬇️ 导出有效的 Keys
+                        🗑️ 清除所有无效 Keys
                     </Button>
-                )}
+                </div>
+
+                {/* 随机选取 Key 功能 */}
+                <div className="mt-6 p-4 bg-blue-50 border border-blue-200 text-blue-800 rounded-md">
+                    <h3 className="font-bold mb-3 flex items-center text-lg">
+                        <span className="mr-2">🎲</span> 随机选取有效 Key
+                    </h3>
+                    <div className="flex flex-col sm:flex-row items-center gap-3">
+                        <input
+                            type="number"
+                            min="1"
+                            value={randomSelectCount}
+                            onChange={(e) => setRandomSelectCount(Number(e.target.value))}
+                            className="w-24 p-2 border border-gray-300 rounded-md text-center text-lg focus:outline-none focus:ring-2 focus:ring-blue-400"
+                            aria-label="选取数量"
+                        />
+                        <Button
+                            onClick={selectRandomKeys}
+                            disabled={isCopying || totalValidKeysInDb === 0}
+                            className="flex-1 py-3 text-lg bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors duration-200"
+                        >
+                            {isCopying ? '复制中...' : '📋 选取并复制到剪贴板'}
+                        </Button>
+                    </div>
+                    {totalValidKeysInDb === 0 && (
+                        <p className="text-sm text-gray-600 mt-2">（当前无有效 Key 可供选取）</p>
+                    )}
+                </div>
             </div>
         </div>
     );

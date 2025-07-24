@@ -10,9 +10,9 @@ const GEMINI_API_MODELS_URL = 'https://api-proxy.me/gemini/v1beta/models';
 
 export async function POST(request) {
     try {
-        const { keys, action } = await request.json(); // ✨ 接收 action 字段
+        const { keys, action, count } = await request.json(); // ✨ 接收 count 字段
 
-        // 处理 "fetchAll" 动作：只返回所有数据库中的 Key
+        // --- 处理 "fetchAll" 动作：只返回所有数据库中的 Key ---
         if (action === 'fetchAll') {
             const allKeysInDb = await prisma.apiKey.findMany({
                 orderBy: {
@@ -23,14 +23,27 @@ export async function POST(request) {
             return NextResponse.json(allKeysInDb);
         }
 
-        // 默认处理 "validateAndSave" 动作（或没有 action 字段时）
+        // --- 处理 "clearInvalid" 动作：删除所有无效 Key ---
+        if (action === 'clearInvalid') {
+            const deleteResult = await prisma.apiKey.deleteMany({
+                where: {
+                    status: {
+                        in: ['invalid', 'error'] // 删除状态为 'invalid' 或 'error' 的 Key
+                    }
+                }
+            });
+            await prisma.$disconnect();
+            return NextResponse.json({ message: `成功删除了 ${deleteResult.count} 个无效 Key。` });
+        }
+
+        // --- 默认处理 "validateAndSave" 动作（或没有 action 字段时）---
         if (!Array.isArray(keys) || keys.length === 0) {
-            // 如果不是 fetchAll 且 keys 为空，则返回错误
+            // 如果不是上述特殊动作且 keys 为空，则返回错误
             await prisma.$disconnect();
             return NextResponse.json({ error: '请提供 API Keys 数组进行验证。' }, { status: 400 });
         }
 
-        const batchValidationResults = []; // 用于存储当前批次验证结果
+        const batchValidationResults = [];
 
         for (const key of keys) {
             let status = 'unknown';
